@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "quanttogo": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "quanttogo-mcp"
+      ],
+      "env": {
+        "QUANTTOGO_API_KEY": "qtg_trial_agent_30d"
+      }
+    },
+    "quanttogo-local": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "tsx",
+        "mcp/server.ts"
+      ],
+      "env": {}
+    }
+  }
+}

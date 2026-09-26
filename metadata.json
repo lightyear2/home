@@ -1,0 +1,6 @@
+{
+  "name": "Multi-Market Equity Signal Screener",
+  "description": "Quantitative equity screener tracking 62 stocks across Singapore (STI 30), China (CSI 10), Hong Kong (HSI 10), and the US (S&P/Dow 12) synthesized across Price Momentum, Volume Conviction, and Sector P/E Valuation into a Kanban signal workflow.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
