@@ -1,7 +1,23 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { EvaluatedStock, SignalType, FinalSignalType } from '../types/stock';
 import { formatCurrency, formatVolume, MARKET_BADGES, SIGNAL_METADATA } from '../utils/signals';
-import { Star, ChevronRight, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import {
+  NewsSentimentData,
+  fetchNewsSentimentForStock,
+  getSentimentBadgeProps,
+} from '../utils/newsSentiment';
+import { NewsSentimentModal } from './NewsSentimentModal';
+import {
+  Star,
+  ChevronRight,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Globe,
+  Sparkles,
+  RefreshCw,
+  ExternalLink,
+} from 'lucide-react';
 
 interface TableViewProps {
   stocks: EvaluatedStock[];
@@ -16,6 +32,58 @@ export const TableView: React.FC<TableViewProps> = ({
   onToggleWatchlist,
   onSelectStock,
 }) => {
+  // Store fetched news sentiments by ticker
+  const [sentimentMap, setSentimentMap] = useState<Record<string, NewsSentimentData>>({});
+  const [loadingTickers, setLoadingTickers] = useState<Set<string>>(new Set());
+
+  // Modal inspection state for headlines
+  const [modalData, setModalData] = useState<NewsSentimentData | null>(null);
+  const [isModalLoading, setIsModalLoading] = useState<boolean>(false);
+
+  // Helper to fetch news sentiment for a ticker using Google Search Grounding
+  const handleFetchSentiment = async (
+    stock: EvaluatedStock,
+    openModal = false,
+    e?: React.MouseEvent
+  ) => {
+    if (e) e.stopPropagation();
+
+    // If already in map and modal requested, just open modal
+    if (sentimentMap[stock.ticker] && openModal) {
+      setModalData(sentimentMap[stock.ticker]);
+      return;
+    }
+
+    if (openModal) {
+      setModalData(null);
+      setIsModalLoading(true);
+    }
+
+    setLoadingTickers((prev) => new Set(prev).add(stock.ticker));
+
+    try {
+      const result = await fetchNewsSentimentForStock({
+        ticker: stock.ticker,
+        name: stock.name,
+        market: stock.market,
+      });
+
+      setSentimentMap((prev) => ({ ...prev, [stock.ticker]: result }));
+      if (openModal) {
+        setModalData(result);
+      }
+    } catch (err) {
+      console.error('Failed to fetch sentiment:', err);
+    } finally {
+      setLoadingTickers((prev) => {
+        const next = new Set(prev);
+        next.delete(stock.ticker);
+        return next;
+      });
+      setIsModalLoading(false);
+    }
+  };
+
   const getSignalBadge = (signal: SignalType) => {
     switch (signal) {
       case 'BUY':
@@ -49,6 +117,16 @@ export const TableView: React.FC<TableViewProps> = ({
                 <th className="py-3 px-4 text-center">Volume Signal (Wk Avg)</th>
                 <th className="py-3 px-4 text-center">P/E Signal (Sector Avg)</th>
                 <th className="py-3 px-4 text-center">Final Signal</th>
+                {/* News Sentiment Column grounded via Google Search */}
+                <th className="py-3 px-4 text-center min-w-[170px]">
+                  <div className="flex items-center justify-center gap-1 text-cyan-300">
+                    <Sparkles className="w-3 h-3 text-cyan-400" />
+                    <span>News Sentiment</span>
+                  </div>
+                  <div className="text-[9px] text-slate-500 font-normal lowercase tracking-normal">
+                    google search grounded
+                  </div>
+                </th>
                 <th className="py-3 px-3 text-right"></th>
               </tr>
             </thead>
@@ -59,10 +137,20 @@ export const TableView: React.FC<TableViewProps> = ({
                 const isPos = stock.changePercent >= 0;
                 const isZero = stock.changePercent === 0;
 
+                const sentiment = sentimentMap[stock.ticker];
+                const isLoadingSentiment = loadingTickers.has(stock.ticker);
+                const badgeProps = sentiment ? getSentimentBadgeProps(sentiment.sentimentScore) : null;
+
                 return (
                   <tr
                     key={stock.id}
-                    onClick={() => onSelectStock(stock)}
+                    onClick={() => {
+                      onSelectStock(stock);
+                      // Proactively trigger news sentiment fetch if not already loaded
+                      if (!sentiment && !isLoadingSentiment) {
+                        handleFetchSentiment(stock, false);
+                      }
+                    }}
                     className="hover:bg-[#141d30] transition-colors cursor-pointer group"
                   >
                     {/* Watchlist toggle */}
@@ -210,6 +298,49 @@ export const TableView: React.FC<TableViewProps> = ({
                       </span>
                     </td>
 
+                    {/* NEWS SENTIMENT SCORE COLUMN (Grounded with Google Search) */}
+                    <td className="py-3 px-4 text-center font-sans">
+                      {sentiment ? (
+                        <div
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setModalData(sentiment);
+                          }}
+                          className="inline-flex flex-col items-center justify-center cursor-pointer group/pill"
+                          title="Click to view grounded headlines & Google Search sources"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`px-2 py-0.5 rounded-full font-mono text-[11px] font-bold border transition-all ${badgeProps?.text} ${badgeProps?.bg} ${badgeProps?.border} group-hover/pill:brightness-125`}
+                            >
+                              {sentiment.sentimentScore >= 0
+                                ? `+${sentiment.sentimentScore}`
+                                : sentiment.sentimentScore}{' '}
+                              ({badgeProps?.label})
+                            </span>
+                          </div>
+                          <span className="text-[9px] text-slate-500 font-mono mt-0.5 flex items-center gap-1 group-hover/pill:text-cyan-400">
+                            <Globe className="w-2.5 h-2.5" />
+                            <span>{sentiment.headlines.length} headlines</span>
+                          </span>
+                        </div>
+                      ) : isLoadingSentiment ? (
+                        <div className="flex items-center justify-center gap-1.5 text-cyan-400 font-mono text-[11px]">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span className="text-[10px] text-slate-400">Searching...</span>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={(e) => handleFetchSentiment(stock, true, e)}
+                          className="px-2.5 py-1 rounded bg-slate-800/80 hover:bg-cyan-500/10 text-slate-400 hover:text-cyan-300 border border-slate-700/60 hover:border-cyan-500/30 text-[10px] font-medium transition-colors flex items-center justify-center gap-1 mx-auto"
+                          title="Search recent headlines and analyze sentiment using Google Search Grounding"
+                        >
+                          <Sparkles className="w-3 h-3 text-cyan-400" />
+                          <span>Fetch Sentiment</span>
+                        </button>
+                      )}
+                    </td>
+
                     {/* Action Arrow */}
                     <td className="py-3 px-3 text-right">
                       <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-300 transition-colors inline-block" />
@@ -221,6 +352,19 @@ export const TableView: React.FC<TableViewProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Headlines & News Sentiment Modal */}
+      {modalData && (
+        <NewsSentimentModal
+          data={modalData}
+          isLoading={isModalLoading}
+          onRefresh={(ticker) => {
+            const stock = stocks.find((s) => s.ticker === ticker);
+            if (stock) handleFetchSentiment(stock, true);
+          }}
+          onClose={() => setModalData(null)}
+        />
+      )}
     </div>
   );
 };

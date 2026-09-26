@@ -3,6 +3,11 @@ import { EvaluatedStock, ScreenerConfig } from '../types/stock';
 import { evaluateStock, formatCurrency, formatVolume, MARKET_BADGES, SIGNAL_METADATA } from '../utils/signals';
 import { getStockQuantToGoMcpSpecs, resolveQuantToGoInfo, QUANTTOGO_STRATEGIES } from '../utils/quantToGoMcp';
 import {
+  NewsSentimentData,
+  fetchNewsSentimentForStock,
+  getSentimentBadgeProps,
+} from '../utils/newsSentiment';
+import {
   X,
   Star,
   Activity,
@@ -22,6 +27,10 @@ import {
   Code2,
   GitBranch,
   Layers,
+  Globe,
+  Calendar,
+  RefreshCw,
+  CheckCircle2,
 } from 'lucide-react';
 
 interface StockDetailModalProps {
@@ -43,10 +52,41 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
   const [simPriceDeltaPct, setSimPriceDeltaPct] = useState<number>(0);
   const [simVolumeDeltaPct, setSimVolumeDeltaPct] = useState<number>(0);
 
-  // Tab state: 'analysis' | 'quanttogo-mcp'
-  const [modalTab, setModalTab] = useState<'analysis' | 'quanttogo-mcp'>('analysis');
+  // Tab state: 'analysis' | 'news-sentiment' | 'quanttogo-mcp'
+  const [modalTab, setModalTab] = useState<'analysis' | 'news-sentiment' | 'quanttogo-mcp'>('analysis');
   const [copiedMcpJson, setCopiedMcpJson] = useState<boolean>(false);
   const [copiedInstallCmd, setCopiedInstallCmd] = useState<boolean>(false);
+
+  // News sentiment state grounded via Google Search
+  const [newsData, setNewsData] = useState<NewsSentimentData | null>(null);
+  const [isLoadingNews, setIsLoadingNews] = useState<boolean>(false);
+
+  // Fetch news sentiment grounded with Google Search when stock opens
+  useEffect(() => {
+    if (!stock) return;
+    let isMounted = true;
+    setIsLoadingNews(true);
+
+    fetchNewsSentimentForStock({
+      ticker: stock.ticker,
+      name: stock.name,
+      market: stock.market,
+    })
+      .then((data) => {
+        if (isMounted) {
+          setNewsData(data);
+          setIsLoadingNews(false);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load news sentiment:', err);
+        if (isMounted) setIsLoadingNews(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [stock?.ticker, stock?.market]);
 
   // Reset simulator state when stock changes
   useEffect(() => {
@@ -182,10 +222,10 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
         </div>
 
         {/* Modal Navigation Tabs */}
-        <div className="flex items-center border-b border-slate-800 bg-[#0e1422] px-6 text-xs font-medium">
+        <div className="flex items-center border-b border-slate-800 bg-[#0e1422] px-6 text-xs font-medium overflow-x-auto">
           <button
             onClick={() => setModalTab('analysis')}
-            className={`py-3 px-3 border-b-2 transition-colors flex items-center gap-1.5 ${
+            className={`py-3 px-3 border-b-2 transition-colors flex items-center gap-1.5 whitespace-nowrap ${
               modalTab === 'analysis'
                 ? 'border-cyan-400 text-cyan-300 font-semibold'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -196,15 +236,32 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
           </button>
 
           <button
+            onClick={() => setModalTab('news-sentiment')}
+            className={`py-3 px-3 border-b-2 transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+              modalTab === 'news-sentiment'
+                ? 'border-cyan-400 text-cyan-300 font-semibold'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+            <span>News Sentiment & Grounded Headlines</span>
+            {newsData && (
+              <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
+                {newsData.sentimentScore >= 0 ? `+${newsData.sentimentScore}` : newsData.sentimentScore}
+              </span>
+            )}
+          </button>
+
+          <button
             onClick={() => setModalTab('quanttogo-mcp')}
-            className={`py-3 px-3 border-b-2 transition-colors flex items-center gap-1.5 ${
+            className={`py-3 px-3 border-b-2 transition-colors flex items-center gap-1.5 whitespace-nowrap ${
               modalTab === 'quanttogo-mcp'
                 ? 'border-cyan-400 text-cyan-300 font-semibold'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
             <GitBranch className="w-3.5 h-3.5 text-cyan-400" />
-            <span>QuantToGo Systematic Signals (github.com/QuantToGo/quanttogo-mcp)</span>
+            <span>QuantToGo Systematic Signals</span>
           </button>
         </div>
 
@@ -737,7 +794,172 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
             </>
           )}
 
-          {/* TAB 2: QUANTTOGO MCP SYSTEMATIC SIGNALS */}
+          {/* TAB 2: NEWS SENTIMENT & GROUNDED HEADLINES (Google Search Grounded) */}
+          {modalTab === 'news-sentiment' && (
+            <div className="space-y-6">
+              {isLoadingNews && !newsData ? (
+                <div className="py-16 text-center space-y-3">
+                  <RefreshCw className="w-8 h-8 text-cyan-400 animate-spin mx-auto" />
+                  <p className="text-sm text-slate-300 font-medium">
+                    Searching Google for recent headlines & computing sentiment...
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Grounded with Gemini 3.8 Flash and Google Search
+                  </p>
+                </div>
+              ) : newsData ? (
+                <>
+                  {/* Sentiment Score Gauge Card */}
+                  <div className="bg-[#121929] p-5 rounded-xl border border-cyan-500/30 space-y-4">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse" />
+                        <span className="text-sm font-bold text-white">
+                          News Sentiment Analysis
+                        </span>
+                        <span className="text-xs px-2 py-0.5 rounded font-mono font-semibold bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
+                          <Sparkles className="w-3 h-3 text-cyan-400" />
+                          Google Search Grounded
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          setIsLoadingNews(true);
+                          fetchNewsSentimentForStock({
+                            ticker: stock.ticker,
+                            name: stock.name,
+                            market: stock.market,
+                          }).then((res) => {
+                            setNewsData(res);
+                            setIsLoadingNews(false);
+                          });
+                        }}
+                        disabled={isLoadingNews}
+                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition-colors flex items-center gap-1 text-xs font-mono"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isLoadingNews ? 'animate-spin text-cyan-400' : ''}`} />
+                        <span>Refresh Google Grounding</span>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-slate-400">Calculated Sentiment Score:</span>
+                      <span
+                        className={`px-3 py-1 rounded-full text-xs font-bold font-mono border ${
+                          newsData.sentimentScore >= 0
+                            ? 'text-emerald-400 bg-emerald-950/40 border-emerald-500/30'
+                            : 'text-rose-400 bg-rose-950/40 border-rose-500/30'
+                        }`}
+                      >
+                        {newsData.sentimentScore >= 0 ? `+${newsData.sentimentScore}` : newsData.sentimentScore} / 100 ({newsData.sentimentLabel.replace('_', ' ')})
+                      </span>
+                    </div>
+
+                    {/* Progress Bar */}
+                    <div className="space-y-1">
+                      <div className="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden relative border border-slate-800">
+                        <div
+                          className="absolute top-0 bottom-0 w-0.5 bg-slate-500 z-10"
+                          style={{ left: '50%' }}
+                          title="Neutral"
+                        />
+                        <div
+                          className={`h-full transition-all duration-500 ${
+                            newsData.sentimentScore >= 0 ? 'bg-emerald-400' : 'bg-rose-400'
+                          }`}
+                          style={{
+                            width: `${Math.abs(newsData.sentimentScore) / 2}%`,
+                            marginLeft:
+                              newsData.sentimentScore >= 0
+                                ? '50%'
+                                : `${50 - Math.abs(newsData.sentimentScore) / 2}%`,
+                          }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[10px] font-mono text-slate-500">
+                        <span>-100 Bearish</span>
+                        <span>0 Neutral</span>
+                        <span>+100 Bullish</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-[#0b0f17] p-3 rounded-lg border border-slate-800 text-xs text-slate-300 leading-relaxed">
+                      <strong className="text-white">News Synthesis: </strong>
+                      {newsData.summary}
+                    </div>
+                  </div>
+
+                  {/* Key Sentiment Drivers */}
+                  {newsData.keyDrivers && newsData.keyDrivers.length > 0 && (
+                    <div className="bg-[#111726] p-4 rounded-xl border border-slate-800 space-y-2">
+                      <span className="text-xs font-bold text-slate-200 block">
+                        Key Market Drivers
+                      </span>
+                      <ul className="space-y-1 text-xs text-slate-300">
+                        {newsData.keyDrivers.map((driver, idx) => (
+                          <li key={idx} className="flex items-start gap-2">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
+                            <span>{driver}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Grounded Headlines List */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                        <Globe className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Recent Grounded Headlines ({newsData.headlines.length})</span>
+                      </span>
+                      <span className="text-[11px] text-slate-500 font-mono">
+                        Updated {new Date(newsData.fetchedAt).toLocaleTimeString()}
+                      </span>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {newsData.headlines.map((headline, idx) => (
+                        <a
+                          key={idx}
+                          href={headline.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block p-3.5 rounded-xl bg-[#111726] hover:bg-[#151e33] border border-slate-800 hover:border-slate-700 transition-colors group"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="space-y-1 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-[10px] font-mono font-semibold px-2 py-0.2 rounded bg-slate-800 text-slate-300">
+                                  {headline.source}
+                                </span>
+                                {headline.publishedTime && (
+                                  <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1">
+                                    <Calendar className="w-2.5 h-2.5" />
+                                    {headline.publishedTime}
+                                  </span>
+                                )}
+                              </div>
+                              <h4 className="text-xs font-semibold text-white group-hover:text-cyan-300 transition-colors">
+                                {headline.title}
+                              </h4>
+                              <p className="text-[11px] text-slate-400 line-clamp-2">
+                                {headline.snippet}
+                              </p>
+                            </div>
+                            <ExternalLink className="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400 shrink-0 mt-1 transition-colors" />
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          )}
+
+          {/* TAB 3: QUANTTOGO MCP SYSTEMATIC SIGNALS */}
           {modalTab === 'quanttogo-mcp' && (
             <div className="space-y-6">
               {/* QuantToGo Strategy Match Banner */}
