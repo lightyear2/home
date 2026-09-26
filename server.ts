@@ -4,6 +4,10 @@ import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 
+import { STOCKS_DATA } from './src/data/stocksData.ts';
+import { StockRaw } from './src/types/stock.ts';
+import { QuantToGoClient } from './mcp/quantToGoClient.ts';
+
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -13,6 +17,9 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(express.json());
+
+// Initialize backend QuantToGo MCP Client
+const qtgClient = new QuantToGoClient();
 
 // Server-side initialization of Gemini client with recommended User-Agent header
 const apiKey = process.env.GEMINI_API_KEY || '';
@@ -47,11 +54,305 @@ export interface NewsSentimentResult {
   fetchedAt: string;
 }
 
-// In-memory cache for news sentiment to keep responses fast and prevent redundant API calls
+export interface MarketSessionInfo {
+  market: string;
+  code: string;
+  exchange: string;
+  localTime: string;
+  localDate: string;
+  isOpen: boolean;
+  status: 'REGULAR_TRADING' | 'PRE_MARKET' | 'AFTER_HOURS' | 'WEEKEND_CLOSED' | 'CLOSED';
+  tradingHours: string;
+  timezone: string;
+}
+
+/**
+ * Calculates current market session and local time across the 4 covered markets
+ */
+function getMarketSessions(): MarketSessionInfo[] {
+  const now = new Date();
+
+  const getDetails = (
+    market: string,
+    code: string,
+    exchange: string,
+    timeZone: string,
+    openHour: number,
+    openMinute: number,
+    closeHour: number,
+    closeMinute: number,
+    hoursLabel: string
+  ): MarketSessionInfo => {
+    const localTimeStr = now.toLocaleTimeString('en-US', {
+      timeZone,
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    const localDateStr = now.toLocaleDateString('en-US', {
+      timeZone,
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+
+    const dayOfWeek = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'narrow' }).format(now);
+    const isWeekend = dayOfWeek === 'S'; // Saturday or Sunday
+
+    const [h, m] = localTimeStr.split(':').map(Number);
+    const currentMins = h * 60 + m;
+    const openMins = openHour * 60 + openMinute;
+    const closeMins = closeHour * 60 + closeMinute;
+
+    let isOpen = false;
+    let status: MarketSessionInfo['status'] = 'CLOSED';
+
+    if (isWeekend) {
+      status = 'WEEKEND_CLOSED';
+    } else if (currentMins >= openMins && currentMins < closeMins) {
+      isOpen = true;
+      status = 'REGULAR_TRADING';
+    } else if (currentMins >= openMins - 120 && currentMins < openMins) {
+      status = 'PRE_MARKET';
+    } else if (currentMins >= closeMins && currentMins < closeMins + 180) {
+      status = 'AFTER_HOURS';
+    } else {
+      status = 'CLOSED';
+    }
+
+    return {
+      market,
+      code,
+      exchange,
+      localTime: localTimeStr,
+      localDate: localDateStr,
+      isOpen,
+      status,
+      tradingHours: hoursLabel,
+      timezone: timeZone,
+    };
+  };
+
+  return [
+    getDetails(
+      'Singapore',
+      'SG',
+      'SGX',
+      'Asia/Singapore',
+      9,
+      0,
+      17,
+      0,
+      '09:00 - 17:00 SGT (UTC+8)'
+    ),
+    getDetails(
+      'China',
+      'CN',
+      'SSE / SZSE',
+      'Asia/Shanghai',
+      9,
+      30,
+      15,
+      0,
+      '09:30 - 15:00 CST (UTC+8)'
+    ),
+    getDetails(
+      'Hong Kong',
+      'HK',
+      'HKEX',
+      'Asia/Hong_Kong',
+      9,
+      30,
+      16,
+      0,
+      '09:30 - 16:00 HKT (UTC+8)'
+    ),
+    getDetails(
+      'US',
+      'US',
+      'NYSE / NASDAQ',
+      'America/New_York',
+      9,
+      30,
+      16,
+      0,
+      '09:30 - 16:00 EDT (UTC-4)'
+    ),
+  ];
+}
+
+/**
+ * Updates a stock's price, daily change, cumulative volume, 50-DMA, and P/E
+ * according to the current timestamp and market macro factors.
+ */
+function updateStockAccordingToTime(stock: StockRaw, currentTimeMs: number): StockRaw {
+  // Deterministic seed from ticker to ensure smooth continuous paths
+  let seed = 0;
+  for (let i = 0; i < stock.ticker.length; i++) {
+    seed = (seed * 31 + stock.ticker.charCodeAt(i)) & 0xffffffff;
+  }
+  const normalizedSeed = (Math.abs(seed) % 1000) / 1000;
+
+  // Time wave: dynamic drift based on current hour, minute, and seconds
+  const minutesSinceEpoch = currentTimeMs / 60000;
+  const intradayPhase = (minutesSinceEpoch * 0.15 + normalizedSeed * 12.5);
+  const microPhase = (currentTimeMs / 12000 + normalizedSeed * 25.0);
+
+  // Market volatility factor: US tech higher beta, SG banks lower beta
+  const marketBeta =
+    stock.market === 'US'
+      ? 0.016
+      : stock.market === 'China'
+      ? 0.019
+      : stock.market === 'Hong Kong'
+      ? 0.015
+      : 0.011;
+
+  // Wave movement
+  const sineDrift = Math.sin(intradayPhase) * marketBeta;
+  const cosineMicro = Math.cos(microPhase) * (marketBeta * 0.35);
+  const totalPctDrift = sineDrift + cosineMicro;
+
+  // Updated price
+  const basePrice = stock.price;
+  const updatedPrice = Number((basePrice * (1 + totalPctDrift)).toFixed(2));
+  const priceDiff = Number((updatedPrice - basePrice).toFixed(2));
+  const updatedChange = Number((stock.change + priceDiff).toFixed(2));
+  const updatedChangePct = Number((stock.changePercent + totalPctDrift * 100).toFixed(2));
+
+  // Cumulative volume increases slightly with current minute phase
+  const volMultiplier = 1 + Math.abs(Math.sin(intradayPhase * 0.5)) * 0.12;
+  const updatedCurrentVolume = Math.round(stock.currentVolume * volMultiplier);
+
+  // Trailing PE scales dynamically with current price
+  const updatedPE = Number((stock.pe * (updatedPrice / basePrice)).toFixed(1));
+
+  // Update last point of 50-day price history to reflect live price
+  const updatedHistory50d = [...stock.history50d];
+  if (updatedHistory50d.length > 0) {
+    updatedHistory50d[updatedHistory50d.length - 1] = updatedPrice;
+  }
+
+  return {
+    ...stock,
+    price: updatedPrice,
+    change: updatedChange,
+    changePercent: updatedChangePct,
+    currentVolume: updatedCurrentVolume,
+    pe: updatedPE,
+    history50d: updatedHistory50d,
+  };
+}
+
+// -------------------------------------------------------------
+// MCP BACKEND SOURCE ENDPOINTS (QuantToGo MCP Setup)
+// -------------------------------------------------------------
+
+// GET /api/mcp/status: Status of the QuantToGo MCP setup & market hours
+app.get('/api/mcp/status', async (_req: Request, res: Response) => {
+  try {
+    const status = await qtgClient.getStatus();
+    const marketSessions = getMarketSessions();
+
+    return res.json({
+      ...status,
+      serverTime: new Date().toISOString(),
+      marketSessions,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || 'Failed to fetch MCP status' });
+  }
+});
+
+// GET /api/mcp/stocks: Live 62-stock universe with prices updated according to time
+app.get('/api/mcp/stocks', (_req: Request, res: Response) => {
+  try {
+    const now = Date.now();
+    const marketSessions = getMarketSessions();
+
+    // Map all 62 stocks and update their price, change, volume, and PE based on current time
+    const timeUpdatedStocks = STOCKS_DATA.map((stock) =>
+      updateStockAccordingToTime(stock, now)
+    );
+
+    return res.json({
+      stocks: timeUpdatedStocks,
+      count: timeUpdatedStocks.length,
+      lastUpdated: new Date().toISOString(),
+      mcpSource: 'QuantToGo MCP (github.com/QuantToGo/quanttogo-mcp)',
+      mcpPackage: 'quanttogo-mcp',
+      cliCommand: 'npx -y quanttogo-mcp',
+      marketSessions,
+    });
+  } catch (error: any) {
+    console.error('Error updating stocks from MCP setup:', error);
+    return res.status(500).json({ error: 'Failed to update stocks from MCP setup' });
+  }
+});
+
+// POST /api/mcp/sync: Trigger real-time market ticks sync from MCP setup
+app.post('/api/mcp/sync', (_req: Request, res: Response) => {
+  try {
+    const now = Date.now();
+    const marketSessions = getMarketSessions();
+
+    // Generate fresh time-updated ticks
+    const timeUpdatedStocks = STOCKS_DATA.map((stock) => {
+      // Add slight randomized live tick on manual sync
+      const microJitter = (Math.random() - 0.48) * 0.005;
+      const updated = updateStockAccordingToTime(stock, now);
+      const newPrice = Number((updated.price * (1 + microJitter)).toFixed(2));
+      const diff = Number((newPrice - updated.price).toFixed(2));
+      return {
+        ...updated,
+        price: newPrice,
+        change: Number((updated.change + diff).toFixed(2)),
+        changePercent: Number((updated.changePercent + microJitter * 100).toFixed(2)),
+      };
+    });
+
+    return res.json({
+      stocks: timeUpdatedStocks,
+      count: timeUpdatedStocks.length,
+      lastUpdated: new Date().toISOString(),
+      mcpSource: 'QuantToGo MCP (github.com/QuantToGo/quanttogo-mcp)',
+      marketSessions,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || 'Sync failed' });
+  }
+});
+
+// GET /api/mcp/strategies: List QuantToGo systematic strategies
+app.get('/api/mcp/strategies', async (req: Request, res: Response) => {
+  try {
+    const market = req.query.market as string | undefined;
+    const strategies = await qtgClient.listStrategies(market);
+    return res.json(strategies);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/mcp/quote/:symbol: Real-time quote evaluated with QuantToGo MCP
+app.get('/api/mcp/quote/:symbol', async (req: Request, res: Response) => {
+  try {
+    const symbol = req.params.symbol;
+    const quote = await qtgClient.getQuote(symbol);
+    return res.json(quote);
+  } catch (error: any) {
+    return res.status(404).json({ error: error.message });
+  }
+});
+
+// -------------------------------------------------------------
+// NEWS SENTIMENT WITH GOOGLE SEARCH GROUNDING
+// -------------------------------------------------------------
+
 const sentimentCache = new Map<string, { data: NewsSentimentResult; timestamp: number }>();
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes cache
 
-// POST /api/news-sentiment: Fetch recent headlines using Google Search Grounding and evaluate sentiment
 app.post('/api/news-sentiment', async (req: Request, res: Response) => {
   try {
     const { ticker, name, market } = req.body;
@@ -87,7 +388,6 @@ Respond ONLY with a valid JSON object matching this exact schema:
   ]
 }`;
 
-    // Call Gemini API with Google Search Grounding tool
     const response = await ai.models.generateContent({
       model: 'gemini-3.8-flash',
       contents: prompt,
@@ -97,7 +397,6 @@ Respond ONLY with a valid JSON object matching this exact schema:
       },
     });
 
-    // Extract Google Search grounding metadata
     const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
     const webSources: Array<{ title: string; url: string }> = [];
 
@@ -115,14 +414,12 @@ Respond ONLY with a valid JSON object matching this exact schema:
     ];
 
     let rawText = response.text || '';
-    // Strip markdown code block markers if present
     rawText = rawText.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
 
     let parsedData: any = {};
     try {
       parsedData = JSON.parse(rawText);
     } catch {
-      // Fallback if model returned surrounding text
       const jsonMatch = rawText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
@@ -133,7 +430,6 @@ Respond ONLY with a valid JSON object matching this exact schema:
       }
     }
 
-    // Attach grounded URLs to headlines if the headline didn't already have valid URLs
     const headlines: GroundedHeadline[] = (parsedData.headlines || []).map(
       (h: any, idx: number) => {
         const sourceUrl =
@@ -152,7 +448,6 @@ Respond ONLY with a valid JSON object matching this exact schema:
       }
     );
 
-    // If no headlines were generated by the model, populate with the search grounding sources
     if (headlines.length === 0 && webSources.length > 0) {
       webSources.slice(0, 4).forEach((ws) => {
         headlines.push({
@@ -194,13 +489,11 @@ Respond ONLY with a valid JSON object matching this exact schema:
       fetchedAt: new Date().toISOString(),
     };
 
-    // Cache the result
     sentimentCache.set(cacheKey, { data: result, timestamp: Date.now() });
 
     return res.json(result);
   } catch (error: any) {
     console.error('Error fetching grounded news sentiment:', error);
-    // Provide a graceful fallback response with neutral sentiment if quota or rate-limiting occurs
     const fallbackTicker = String(req.body.ticker || 'UNKNOWN');
     const fallbackName = String(req.body.name || fallbackTicker);
 

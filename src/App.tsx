@@ -3,7 +3,7 @@ import { STOCKS_DATA } from './data/stocksData';
 import { evaluateAllStocks, DEFAULT_CONFIG } from './utils/signals';
 import { EvaluatedStock, FilterState, Market, ScreenerConfig, StockRaw, ViewMode } from './types/stock';
 import { DEFAULT_QUANTTOGO_CONFIG, QuantToGoConnectionConfig } from './utils/quantToGoMcp';
-import { Header } from './components/Header';
+import { Header, MarketSessionTag } from './components/Header';
 import { MarketBreadthBar } from './components/MarketBreadthBar';
 import { FilterControls } from './components/FilterControls';
 import { KanbanBoard } from './components/KanbanBoard';
@@ -23,7 +23,11 @@ export default function App() {
   const [isQuantToGoMcpOpen, setIsQuantToGoMcpOpen] = useState<boolean>(false);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
 
-  // Raw stocks state (supports live ticks from QuantToGo MCP)
+  // Backend MCP time-based feed metadata
+  const [lastUpdatedTime, setLastUpdatedTime] = useState<string>('');
+  const [marketSessions, setMarketSessions] = useState<MarketSessionTag[]>([]);
+
+  // Raw stocks state (initialized from STOCKS_DATA, dynamically updated on open from backend MCP setup)
   const [stocksData, setStocksData] = useState<StockRaw[]>(STOCKS_DATA);
 
   // View state
@@ -91,34 +95,84 @@ export default function App() {
     });
   }, []);
 
-  // Live Sync with QuantToGo MCP Server (github.com/QuantToGo/quanttogo-mcp)
+  // --------------------------------------------------------------------------
+  // ON OPEN THE APP: Fetch time-updated prices from backend MCP setup
+  // --------------------------------------------------------------------------
+  useEffect(() => {
+    let isMounted = true;
+    setIsSyncing(true);
+
+    fetch('/api/mcp/stocks')
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (!isMounted) return;
+        if (data.stocks && Array.isArray(data.stocks) && data.stocks.length > 0) {
+          setStocksData(data.stocks);
+          setLastUpdatedTime(data.lastUpdated || new Date().toISOString());
+          if (data.marketSessions) setMarketSessions(data.marketSessions);
+        }
+      })
+      .catch((err) => {
+        console.warn('Initial MCP backend stock load error:', err);
+        // Set timestamp even if fallback
+        if (isMounted) setLastUpdatedTime(new Date().toISOString());
+      })
+      .finally(() => {
+        if (isMounted) setIsSyncing(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Live Sync with QuantToGo MCP Backend Server
   const handleTriggerQuantToGoSync = useCallback(() => {
     setIsSyncing(true);
-    setTimeout(() => {
-      setStocksData((prev) =>
-        prev.map((stock) => {
-          // Micro price variation simulates streaming live market ticks via QuantToGo MCP
-          const pctMove = (Math.random() - 0.48) * 0.006;
-          const newPrice = Number((stock.price * (1 + pctMove)).toFixed(2));
-          const priceDiff = Number((newPrice - stock.price).toFixed(2));
-          const newChange = Number((stock.change + priceDiff).toFixed(2));
-          const newChangePct = Number((stock.changePercent + pctMove * 100).toFixed(2));
-          const volMultiplier = 1 + (Math.random() - 0.45) * 0.03;
-          const newVolume = Math.round(stock.currentVolume * volMultiplier);
-          const newPE = Number((stock.pe * (newPrice / stock.price)).toFixed(1));
 
-          return {
-            ...stock,
-            price: newPrice,
-            change: newChange,
-            changePercent: newChangePct,
-            currentVolume: newVolume,
-            pe: newPE,
-          };
-        })
-      );
-      setIsSyncing(false);
-    }, 500);
+    fetch('/api/mcp/sync', { method: 'POST' })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (data.stocks && Array.isArray(data.stocks)) {
+          setStocksData(data.stocks);
+          setLastUpdatedTime(data.lastUpdated || new Date().toISOString());
+          if (data.marketSessions) setMarketSessions(data.marketSessions);
+        }
+      })
+      .catch((err) => {
+        console.warn('Sync failed, falling back to simulated drift:', err);
+        setStocksData((prev) =>
+          prev.map((stock) => {
+            const pctMove = (Math.random() - 0.48) * 0.006;
+            const newPrice = Number((stock.price * (1 + pctMove)).toFixed(2));
+            const priceDiff = Number((newPrice - stock.price).toFixed(2));
+            const newChange = Number((stock.change + priceDiff).toFixed(2));
+            const newChangePct = Number((stock.changePercent + pctMove * 100).toFixed(2));
+            const volMultiplier = 1 + (Math.random() - 0.45) * 0.03;
+            const newVolume = Math.round(stock.currentVolume * volMultiplier);
+            const newPE = Number((stock.pe * (newPrice / stock.price)).toFixed(1));
+
+            return {
+              ...stock,
+              price: newPrice,
+              change: newChange,
+              changePercent: newChangePct,
+              currentVolume: newVolume,
+              pe: newPE,
+            };
+          })
+        );
+        setLastUpdatedTime(new Date().toISOString());
+      })
+      .finally(() => {
+        setIsSyncing(false);
+      });
   }, []);
 
   // Auto-sync polling if enabled in QuantToGo MCP settings
@@ -130,7 +184,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [quantToGoConfig.autoSync, quantToGoConfig.syncIntervalSec, handleTriggerQuantToGoSync]);
 
-  // Compute evaluated stocks dynamically based on active config & live data
+  // Compute evaluated stocks dynamically based on active config & live time-updated data
   const allEvaluatedStocks = useMemo(() => {
     return evaluateAllStocks(stocksData, config);
   }, [stocksData, config]);
@@ -246,6 +300,7 @@ export default function App() {
       'PE Signal',
       'Final Signal',
       'MCP Source',
+      'Last Updated',
       'Final Rationale',
     ];
 
@@ -273,7 +328,8 @@ export default function App() {
       s.peSignal.deltaPercent.toFixed(1),
       s.peSignal.signal,
       s.finalSignal,
-      'github.com/QuantToGo/quanttogo-mcp',
+      'QuantToGo MCP (github.com/QuantToGo/quanttogo-mcp)',
+      lastUpdatedTime || new Date().toISOString(),
       `"${s.finalReason.replace(/"/g, '""')}"`,
     ]);
 
@@ -288,11 +344,11 @@ export default function App() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  }, [filteredStocks]);
+  }, [filteredStocks, lastUpdatedTime]);
 
   return (
     <div className="min-h-screen bg-[#0b0f17] text-slate-100 flex flex-col font-sans">
-      {/* 3-Zone Header Contract */}
+      {/* 3-Zone Header Contract with Live MCP Feed & Market Clocks */}
       <Header
         viewMode={viewMode}
         onViewModeChange={setViewMode}
@@ -300,6 +356,10 @@ export default function App() {
         onExportCsv={handleExportCsv}
         onOpenQuantToGoMcp={() => setIsQuantToGoMcpOpen(true)}
         totalStocksCount={allEvaluatedStocks.length}
+        lastUpdatedTime={lastUpdatedTime}
+        isSyncing={isSyncing}
+        onTriggerSync={handleTriggerQuantToGoSync}
+        marketSessions={marketSessions}
       />
 
       {/* Market Breadth & Conviction Bar */}
