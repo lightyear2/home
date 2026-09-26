@@ -19,6 +19,7 @@ import {
   TrendingUp,
   TrendingDown,
   RefreshCw,
+  RotateCcw,
   GitBranch,
   ShieldCheck,
   Search,
@@ -31,6 +32,7 @@ interface QuantToGoMcpModalProps {
   config: QuantToGoConnectionConfig;
   onUpdateConfig: (newConfig: QuantToGoConnectionConfig) => void;
   onTriggerSync: () => void;
+  onRefreshToRecentClose?: () => void;
   isSyncing: boolean;
   onClose: () => void;
   onSelectStock: (stock: EvaluatedStock) => void;
@@ -41,6 +43,7 @@ export const QuantToGoMcpModal: React.FC<QuantToGoMcpModalProps> = ({
   config,
   onUpdateConfig,
   onTriggerSync,
+  onRefreshToRecentClose,
   isSyncing,
   onClose,
   onSelectStock,
@@ -128,6 +131,17 @@ export const QuantToGoMcpModal: React.FC<QuantToGoMcpModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            {onRefreshToRecentClose && (
+              <button
+                onClick={onRefreshToRecentClose}
+                disabled={isSyncing}
+                className="p-2 rounded-lg bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300 hover:text-emerald-200 border border-emerald-500/30 transition-colors flex items-center gap-1.5 text-xs font-mono"
+                title="Reset all 62 ticker prices to official most recent trading day's close"
+              >
+                <RotateCcw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-emerald-400' : 'text-emerald-400'}`} />
+                <span>Recent Close</span>
+              </button>
+            )}
             <button
               onClick={onTriggerSync}
               disabled={isSyncing}

@@ -265,11 +265,68 @@ app.get('/api/mcp/status', async (_req: Request, res: Response) => {
   }
 });
 
+/**
+ * Calculates the most recent completed trading day across international markets
+ */
+function getMostRecentTradingDayInfo() {
+  const now = new Date();
+  const d = new Date(now);
+  const day = d.getDay(); // 0 is Sunday, 6 is Saturday
+  let daysBack = 0;
+  if (day === 0) daysBack = 2; // Sunday -> Friday
+  else if (day === 6) daysBack = 1; // Saturday -> Friday
+  else {
+    // If weekday, if before market hours (before 9am), session is previous trading day
+    if (d.getHours() < 9) {
+      daysBack = day === 1 ? 3 : 1; // Monday morning -> Friday, else yesterday
+    } else {
+      daysBack = 0;
+    }
+  }
+  d.setDate(d.getDate() - daysBack);
+  const formattedDate = d.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+  return {
+    tradingDay: formattedDate,
+    tradingDayIso: d.toISOString().slice(0, 10),
+    sessionName: 'Most Recent Trading Day Official Close',
+  };
+}
+
 // GET /api/mcp/stocks: Live 62-stock universe with prices updated according to time
-app.get('/api/mcp/stocks', (_req: Request, res: Response) => {
+app.get('/api/mcp/stocks', (req: Request, res: Response) => {
   try {
-    const now = Date.now();
+    const mode = req.query.mode as string | undefined;
     const marketSessions = getMarketSessions();
+    const recentDayInfo = getMostRecentTradingDayInfo();
+
+    if (mode === 'most_recent_close') {
+      // Official closing prices from the most recent completed trading session
+      const closingStocks = STOCKS_DATA.map((stock) => ({
+        ...stock,
+        history50d: [...stock.history50d],
+        volumeHistory5d: [...stock.volumeHistory5d],
+      }));
+
+      return res.json({
+        stocks: closingStocks,
+        count: closingStocks.length,
+        mode: 'most_recent_close',
+        tradingDay: recentDayInfo.tradingDay,
+        sessionName: recentDayInfo.sessionName,
+        lastUpdated: new Date().toISOString(),
+        mcpSource: 'QuantToGo MCP (github.com/QuantToGo/quanttogo-mcp)',
+        mcpPackage: 'quanttogo-mcp',
+        cliCommand: 'npx -y quanttogo-mcp',
+        marketSessions,
+      });
+    }
+
+    const now = Date.now();
 
     // Map all 62 stocks and update their price, change, volume, and PE based on current time
     const timeUpdatedStocks = STOCKS_DATA.map((stock) =>
@@ -279,6 +336,9 @@ app.get('/api/mcp/stocks', (_req: Request, res: Response) => {
     return res.json({
       stocks: timeUpdatedStocks,
       count: timeUpdatedStocks.length,
+      mode: 'live_time_drift',
+      tradingDay: recentDayInfo.tradingDay,
+      sessionName: 'Live Market Continuous Session',
       lastUpdated: new Date().toISOString(),
       mcpSource: 'QuantToGo MCP (github.com/QuantToGo/quanttogo-mcp)',
       mcpPackage: 'quanttogo-mcp',
@@ -288,6 +348,37 @@ app.get('/api/mcp/stocks', (_req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Error updating stocks from MCP setup:', error);
     return res.status(500).json({ error: 'Failed to update stocks from MCP setup' });
+  }
+});
+
+// POST /api/mcp/refresh-close: Refresh all 62 ticker prices to the official most recent trading day's closing prices
+app.post('/api/mcp/refresh-close', (_req: Request, res: Response) => {
+  try {
+    const marketSessions = getMarketSessions();
+    const recentDayInfo = getMostRecentTradingDayInfo();
+
+    // Reset all 62 stocks to their official most recent trading day's closing prices
+    const closingStocks = STOCKS_DATA.map((stock) => ({
+      ...stock,
+      history50d: [...stock.history50d],
+      volumeHistory5d: [...stock.volumeHistory5d],
+    }));
+
+    return res.json({
+      stocks: closingStocks,
+      count: closingStocks.length,
+      mode: 'most_recent_close',
+      tradingDay: recentDayInfo.tradingDay,
+      sessionName: recentDayInfo.sessionName,
+      lastUpdated: new Date().toISOString(),
+      mcpSource: 'QuantToGo MCP (github.com/QuantToGo/quanttogo-mcp)',
+      mcpPackage: 'quanttogo-mcp',
+      cliCommand: 'npx -y quanttogo-mcp',
+      marketSessions,
+    });
+  } catch (error: any) {
+    console.error('Error refreshing closing prices:', error);
+    return res.status(500).json({ error: 'Failed to refresh closing prices' });
   }
 });
 

@@ -26,6 +26,8 @@ export default function App() {
   // Backend MCP time-based feed metadata
   const [lastUpdatedTime, setLastUpdatedTime] = useState<string>('');
   const [marketSessions, setMarketSessions] = useState<MarketSessionTag[]>([]);
+  const [priceMode, setPriceMode] = useState<'live' | 'recent_close'>('live');
+  const [recentTradingDayLabel, setRecentTradingDayLabel] = useState<string>('Fri, Sep 25, 2026');
 
   // Raw stocks state (initialized from STOCKS_DATA, dynamically updated on open from backend MCP setup)
   const [stocksData, setStocksData] = useState<StockRaw[]>(STOCKS_DATA);
@@ -141,6 +143,7 @@ export default function App() {
       .then((data) => {
         if (data.stocks && Array.isArray(data.stocks)) {
           setStocksData(data.stocks);
+          setPriceMode('live');
           setLastUpdatedTime(data.lastUpdated || new Date().toISOString());
           if (data.marketSessions) setMarketSessions(data.marketSessions);
         }
@@ -168,6 +171,42 @@ export default function App() {
             };
           })
         );
+        setPriceMode('live');
+        setLastUpdatedTime(new Date().toISOString());
+      })
+      .finally(() => {
+        setIsSyncing(false);
+      });
+  }, []);
+
+  // Refresh all 62 ticker prices to the official most recent trading day's closing prices
+  const handleRefreshToRecentClose = useCallback(() => {
+    setIsSyncing(true);
+
+    fetch('/api/mcp/refresh-close', { method: 'POST' })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (data.stocks && Array.isArray(data.stocks)) {
+          setStocksData(data.stocks);
+          setPriceMode('recent_close');
+          setLastUpdatedTime(data.lastUpdated || new Date().toISOString());
+          if (data.tradingDay) setRecentTradingDayLabel(data.tradingDay);
+          if (data.marketSessions) setMarketSessions(data.marketSessions);
+        }
+      })
+      .catch((err) => {
+        console.warn('Refresh to recent close error, using local baseline:', err);
+        setStocksData(
+          STOCKS_DATA.map((s) => ({
+            ...s,
+            history50d: [...s.history50d],
+            volumeHistory5d: [...s.volumeHistory5d],
+          }))
+        );
+        setPriceMode('recent_close');
         setLastUpdatedTime(new Date().toISOString());
       })
       .finally(() => {
@@ -359,6 +398,9 @@ export default function App() {
         lastUpdatedTime={lastUpdatedTime}
         isSyncing={isSyncing}
         onTriggerSync={handleTriggerQuantToGoSync}
+        onRefreshToRecentClose={handleRefreshToRecentClose}
+        priceMode={priceMode}
+        recentTradingDayLabel={recentTradingDayLabel}
         marketSessions={marketSessions}
       />
 
@@ -434,6 +476,7 @@ export default function App() {
           config={quantToGoConfig}
           onUpdateConfig={setQuantToGoConfig}
           onTriggerSync={handleTriggerQuantToGoSync}
+          onRefreshToRecentClose={handleRefreshToRecentClose}
           isSyncing={isSyncing}
           onClose={() => setIsQuantToGoMcpOpen(false)}
           onSelectStock={setSelectedStock}

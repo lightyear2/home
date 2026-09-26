@@ -11,6 +11,7 @@ import {
   Clock,
   Globe,
   ChevronDown,
+  RotateCcw,
 } from 'lucide-react';
 
 export interface MarketSessionTag {
@@ -34,6 +35,9 @@ interface HeaderProps {
   lastUpdatedTime?: string;
   isSyncing?: boolean;
   onTriggerSync?: () => void;
+  onRefreshToRecentClose?: () => void;
+  priceMode?: 'live' | 'recent_close';
+  recentTradingDayLabel?: string;
   marketSessions?: MarketSessionTag[];
 }
 
@@ -47,6 +51,9 @@ export const Header: React.FC<HeaderProps> = ({
   lastUpdatedTime,
   isSyncing,
   onTriggerSync,
+  onRefreshToRecentClose,
+  priceMode = 'live',
+  recentTradingDayLabel,
   marketSessions,
 }) => {
   const [showSessionsDropdown, setShowSessionsDropdown] = useState(false);
@@ -67,26 +74,59 @@ export const Header: React.FC<HeaderProps> = ({
 
               {/* MCP Live Status Pill */}
               <div className="flex items-center gap-1.5 font-mono text-[10px]">
-                <span className="flex items-center gap-1 text-cyan-300 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/30 font-semibold shadow-sm">
+                {priceMode === 'recent_close' ? (
                   <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      isSyncing ? 'bg-cyan-400 animate-ping' : 'bg-emerald-400 animate-pulse'
-                    }`}
-                  />
-                  <span>MCP Live</span>
-                  {lastUpdatedTime && (
-                    <span className="text-slate-400 font-normal">
-                      · {new Date(lastUpdatedTime).toLocaleTimeString()}
-                    </span>
-                  )}
-                </span>
+                    className="flex items-center gap-1 text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30 font-semibold shadow-sm"
+                    title="All tickers set to most recent trading day's official closing prices"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    <span>Recent Close ({recentTradingDayLabel || 'Official'})</span>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 text-cyan-300 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/30 font-semibold shadow-sm">
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        isSyncing ? 'bg-cyan-400 animate-ping' : 'bg-emerald-400 animate-pulse'
+                      }`}
+                    />
+                    <span>MCP Live</span>
+                    {lastUpdatedTime && (
+                      <span className="text-slate-400 font-normal">
+                        · {new Date(lastUpdatedTime).toLocaleTimeString()}
+                      </span>
+                    )}
+                  </span>
+                )}
 
+                {/* Quick Refresh to Recent Close Button */}
+                {onRefreshToRecentClose && (
+                  <button
+                    onClick={onRefreshToRecentClose}
+                    disabled={isSyncing}
+                    className={`p-1 rounded transition-colors border ${
+                      priceMode === 'recent_close'
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-sm'
+                        : 'bg-slate-800/60 hover:bg-emerald-500/20 text-slate-400 hover:text-emerald-300 border-slate-700/60'
+                    }`}
+                    title="Refresh all tickers to most recent trading day's closing price"
+                  >
+                    <RotateCcw
+                      className={`w-3 h-3 ${isSyncing ? 'animate-spin text-emerald-400' : 'text-emerald-400'}`}
+                    />
+                  </button>
+                )}
+
+                {/* Live Continuous Ticks Sync Button */}
                 {onTriggerSync && (
                   <button
                     onClick={onTriggerSync}
                     disabled={isSyncing}
-                    className="p-1 rounded bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-cyan-300 border border-slate-700/60 transition-colors"
-                    title="Sync latest prices from QuantToGo MCP backend"
+                    className={`p-1 rounded transition-colors border ${
+                      priceMode === 'live'
+                        ? 'bg-slate-800/60 hover:bg-cyan-500/20 text-slate-400 hover:text-cyan-300 border-slate-700/60'
+                        : 'bg-slate-800/40 text-slate-500 hover:text-cyan-300 border-slate-800'
+                    }`}
+                    title="Sync real-time tick movements from QuantToGo MCP backend"
                   >
                     <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin text-cyan-400' : ''}`} />
                   </button>
@@ -99,7 +139,11 @@ export const Header: React.FC<HeaderProps> = ({
               <span aria-hidden="true">·</span>
               <span>4 Markets</span>
               <span aria-hidden="true">·</span>
-              <span>Time-Updated Quotes (QuantToGo MCP)</span>
+              <span>
+                {priceMode === 'recent_close'
+                  ? `Most Recent Close (${recentTradingDayLabel || 'Official'})`
+                  : 'Time-Updated Quotes (QuantToGo MCP)'}
+              </span>
             </div>
           </div>
         </div>
@@ -141,8 +185,30 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         </nav>
 
-        {/* Zone 3: Market Clock, MCP Hub, Parameters & Export */}
+        {/* Zone 3: Market Clock, Refresh Button, MCP Hub, Parameters & Export */}
         <div className="flex items-center gap-2">
+          {/* REFRESH TO MOST RECENT TRADING DAY'S CLOSING PRICE BUTTON */}
+          {onRefreshToRecentClose && (
+            <button
+              onClick={onRefreshToRecentClose}
+              disabled={isSyncing}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all whitespace-nowrap ${
+                priceMode === 'recent_close'
+                  ? 'text-emerald-300 bg-emerald-500/20 border border-emerald-500/40 shadow-sm shadow-emerald-500/10'
+                  : 'text-slate-200 bg-[#131b2c] hover:bg-[#1a253d] hover:text-white border border-slate-800 hover:border-slate-700'
+              }`}
+              title="Refresh all 62 ticker prices to the most recent trading day's official closing prices"
+            >
+              <RotateCcw
+                className={`w-3.5 h-3.5 text-emerald-400 ${isSyncing ? 'animate-spin' : ''}`}
+              />
+              <span>Refresh to Recent Close</span>
+              {priceMode === 'recent_close' && (
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />
+              )}
+            </button>
+          )}
+
           {/* Regional Market Hours Dropdown */}
           {marketSessions && marketSessions.length > 0 && (
             <div className="relative">
